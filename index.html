@@ -1,0 +1,72 @@
+<!DOCTYPE html>
+<html lang="zh-Hant">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<meta name="theme-color" content="#1a73e8">
+<title>IPC2DO 待辦管理系統</title>
+<style>
+  html, body { margin: 0; height: 100%; background: #f4f6f9; overflow: hidden; }
+  #app { position: fixed; inset: 0; width: 100%; height: 100%; border: 0; }
+  #help { position: fixed; left: 0; right: 0; bottom: 0; padding: 10px 14px calc(10px + env(safe-area-inset-bottom));
+    background: #fff8e1; border-top: 1px solid #f3d27a; font: 13px/1.5 "Microsoft JhengHei", "PingFang TC", sans-serif;
+    color: #6b5200; display: none; }
+  #help a { color: #1a73e8; }
+</style>
+</head>
+<body>
+<!--
+  IPC2DO 入口頁（放在 GitHub Pages）
+  目的：同時登入多個 Google 帳號時，script.google.com 會被加上 /u/1/ 而打不開；
+  透過這個 Google 以外的入口嵌入系統，就不會帶入 Google 帳號序號。
+  網址參數（?token= / ?case= / ?open= / ?view=）會原樣轉給系統。
+-->
+<iframe id="app" title="IPC2DO 待辦管理系統"
+  allow="geolocation; camera; microphone; clipboard-read; clipboard-write; fullscreen"></iframe>
+<div id="help">若畫面一直空白，請 <a id="direct" target="_blank" rel="noopener">點此直接開啟系統</a></div>
+<script>
+  var EXEC = 'https://script.google.com/macros/s/AKfycbzxzBhsEzk7IBfLsYaaxsDrlM46B51U2Jt72pmHsRmNPAK0rgtgfL0s-0cBDwA6cbm6/exec';
+  var url = EXEC + (location.search || '');
+  document.getElementById('app').src = url;
+  document.getElementById('direct').href = url;
+  // 系統載入成功會通知入口頁（ipc2do-ready）→ 不顯示備援提示；20 秒內沒收到才顯示
+  var ready = false;
+  window.addEventListener('message', function (e) {
+    if (e.data === 'ipc2do-ready') { ready = true; document.getElementById('help').style.display = 'none'; }
+  });
+
+  // 「記住我」：系統把登入狀態存到這個入口頁（第一方儲存，不受第三方 Cookie 封鎖影響）
+  // 只接受 Google Apps Script 沙盒（*.googleusercontent.com）傳來的訊息
+  var K_SID = 'ipc2do_sid', K_EXP = 'ipc2do_sid_exp', K_MAIL = 'ipc2do_email';
+  function st(fn) { try { return fn(); } catch (e) { return null; } }
+  function fromApp(e) { return /^https:\/\/[\w-]+(-\d+)?-script\.googleusercontent\.com$/.test(e.origin) || /\.googleusercontent\.com$/.test(e.origin); }
+  window.addEventListener('message', function (e) {
+    var d = e.data;
+    if (!d || typeof d !== 'object' || !fromApp(e)) return;
+    if (d.t === 'ipc2do-store' && /^[a-f0-9]{64}$/.test(d.sid || '')) {
+      if (d.days) {
+        st(function () { localStorage.setItem(K_SID, d.sid); localStorage.setItem(K_EXP, String(Date.now() + d.days * 86400000)); });
+        st(function () { sessionStorage.removeItem(K_SID); });
+      } else {
+        st(function () { sessionStorage.setItem(K_SID, d.sid); localStorage.removeItem(K_SID); localStorage.removeItem(K_EXP); });
+      }
+    } else if (d.t === 'ipc2do-clear') {
+      st(function () { localStorage.removeItem(K_SID); localStorage.removeItem(K_EXP); sessionStorage.removeItem(K_SID); });
+    } else if (d.t === 'ipc2do-email') {
+      st(function () { d.email ? localStorage.setItem(K_MAIL, d.email) : localStorage.removeItem(K_MAIL); });
+    } else if (d.t === 'ipc2do-get') {
+      var sid = st(function () { return sessionStorage.getItem(K_SID); }) || '', days = 0;
+      if (!sid) {
+        var exp = Number(st(function () { return localStorage.getItem(K_EXP); }) || 0);
+        var s2 = st(function () { return localStorage.getItem(K_SID); }) || '';
+        if (s2 && exp > Date.now()) { sid = s2; days = Math.max(1, Math.ceil((exp - Date.now()) / 86400000)); }
+      }
+      var email = st(function () { return localStorage.getItem(K_MAIL); }) || '';
+      e.source.postMessage({ t: 'ipc2do-state', sid: sid, days: days, email: email }, e.origin);
+    }
+  });
+  setTimeout(function () { if (!ready) document.getElementById('help').style.display = 'block'; }, 20000);
+  document.getElementById('help').addEventListener('click', function (e) { if (e.target.tagName !== 'A') this.style.display = 'none'; });
+</script>
+</body>
+</html>
