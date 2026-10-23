@@ -62,12 +62,12 @@
     closeMe();
   };
   /* ---- 防呆：格式／檢查碼驗證＋連續多張一致才採用＋凍結畫面二次確認 ---- */
-  var lastVal = null, sameN = 0, pending = null;
+  var votes = {}, pending = null;   // 讀值 → 最近讀到的時間（2.5 秒內累計次數，漏讀的畫面不歸零）
   var CONFIRM = new URLSearchParams(location.search).get('confirm') !== '0';   // 系統設定：掃描後是否顯示確認畫面
   var ONE_D = ['code_128', 'code_39', 'code_93', 'codabar', 'ean_13', 'ean_8', 'itf', 'upc_a', 'upc_e'];
   var NAMES = { qr_code: 'QR Code', data_matrix: 'Data Matrix', pdf417: 'PDF417', ean_13: 'EAN-13', ean_8: 'EAN-8', upc_a: 'UPC-A', upc_e: 'UPC-E',
     code_128: 'Code 128', code_39: 'Code 39', code_93: 'Code 93', itf: 'ITF', codabar: 'Codabar' };
-  function needReads(f) { return ['code_39', 'code_93', 'itf', 'codabar'].indexOf(f) >= 0 ? 4 : ONE_D.indexOf(f) >= 0 ? 3 : 2; }
+  function needReads(f) { return ['code_39', 'code_93', 'codabar'].indexOf(f) >= 0 ? 4 : ONE_D.indexOf(f) >= 0 ? 3 : 2; }
   function eanOk(d) { var s = 0, n = d.length; for (var i = 0; i < n - 1; i++) { var x = +d.charAt(n - 2 - i); s += i % 2 === 0 ? x * 3 : x; } return (10 - s % 10) % 10 === +d.charAt(n - 1); }
   function valid(f, v) {
     if (!v || !String(v).trim() || /[\uFFFD]/.test(v) || /[\x00-\x08\x0B\x0C\x0E-\x1C\x1E\x1F]/.test(v)) return false;   // 亂碼／控制字元
@@ -76,7 +76,7 @@
       case 'ean_8': return /^\d{8}$/.test(v) && eanOk(v);
       case 'upc_a': return /^\d{12}$/.test(v) && eanOk(v);
       case 'upc_e': return /^\d{6,8}$/.test(v);
-      case 'itf': return /^\d{6,}$/.test(v) && v.length % 2 === 0 && (v.length !== 14 || eanOk(v));
+      case 'itf': return /^\d{8,}$/.test(v) && v.length % 2 === 0 && (v.length !== 14 || eanOk(v));   // ITF 至少 8 碼：擋掉只讀到一段的部分讀值
       case 'codabar': return v.replace(/[ABCD]/gi, '').length >= 4;
       case 'code_39': return v.length >= 3 && /^[0-9A-Z \-.$\/+%*]+$/.test(v);
       case 'code_93': return v.length >= 3;
@@ -87,9 +87,13 @@
   // 每張畫面讀到的候選：通過驗證且「連續 N 張一致」才進入確認畫面
   function candidate(fmt, text) {
     if (done) return;
-    if (!valid(fmt, text)) { lastVal = null; sameN = 0; return; }
-    if (text === lastVal) sameN++; else { lastVal = text; sameN = 1; }
-    if (sameN >= needReads(fmt)) {
+    if (!valid(fmt, text)) return;   // 不合格的讀值直接忽略（不歸零）
+    var now = Date.now(), W = 2500;
+    Object.keys(votes).forEach(function (k) { votes[k] = votes[k].filter(function (t) { return now - t < W; }); if (!votes[k].length) delete votes[k]; });
+    (votes[text] = votes[text] || []).push(now);
+    for (var k in votes) if (k !== text && k.length > text.length && k.indexOf(text) >= 0) return;   // 有更長且包含此內容的讀值：視為部分讀取
+    if (votes[text].length >= needReads(fmt)) {
+      votes = {};
       if (CONFIRM) showConfirm(fmt, text);
       else { beep(); finish(text); }   // 不需確認：直接帶入
     }
@@ -104,13 +108,13 @@
     var sh = document.getElementById('shot'), vw = v.videoWidth, vh = v.videoHeight, s = Math.min(vw, vh) * 0.8;
     sh.width = Math.round(s); sh.height = Math.round(s);
     try { sh.getContext('2d').drawImage(v, (vw - s) / 2, (vh - s) / 2, s, s, 0, 0, sh.width, sh.height); } catch (e) {}
-    document.getElementById('cfmt').textContent = (NAMES[fmt] || '條碼') + '（已連續比對 ' + needReads(fmt) + ' 次一致）';
+    document.getElementById('cfmt').textContent = (NAMES[fmt] || '條碼') + '（已比對 ' + needReads(fmt) + ' 次一致）';
     document.getElementById('ctext').textContent = text;
     document.getElementById('confirm').style.display = 'flex';
   }
   document.getElementById('again').onclick = function () {
     document.getElementById('confirm').style.display = 'none';
-    lastVal = null; sameN = 0; pending = null; done = false;
+    votes = {}; pending = null; done = false;
   };
   document.getElementById('use').onclick = function () { if (pending != null) { done = false; finish(pending); } };
   function finish(text) {
@@ -194,7 +198,7 @@
             var dx = bb.x + bb.width / 2 - cx, dy = bb.y + bb.height / 2 - cy, dist = dx * dx + dy * dy;
             if (dist < bd) { bd = dist; best = b; }
           });
-          if (best) candidate(best.format, best.rawValue); else { lastVal = null; sameN = 0; }
+          if (best) candidate(best.format, best.rawValue);
         } else {
           var s = Math.min(vw, vh) * 0.8;
           // ① 一維條碼：看「穿過十字的橫帶」。條碼旁常緊貼文字（例如載具「檢核碼(15位)」），會破壞條碼前後的空白區，
@@ -215,7 +219,7 @@
             ctx.drawImage(v, cx - s / 2, cy - s / 2, s, s, 0, 0, out, out);
             t = zxTry(Z, r2d, grayOf(ctx, out, out), out, out);
           }
-          if (t) candidate(t.fmt, t.text); else { lastVal = null; sameN = 0; }
+          if (t) candidate(t.fmt, t.text);
         }
       } catch (e) {} finally { busy = false; }
     }, 150);
