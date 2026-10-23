@@ -4,7 +4,7 @@
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
 <meta name="theme-color" content="#000000">
-<title>掃描 QR Code｜IPC2DO</title>
+<title>掃描 QR Code／條碼｜IPC2DO</title>
 <style>
   html, body { margin: 0; height: 100%; background: #000; overflow: hidden; font-family: "Microsoft JhengHei", "PingFang TC", sans-serif; }
   video { position: fixed; inset: 0; width: 100%; height: 100%; object-fit: cover; background: #000; }
@@ -38,8 +38,8 @@
 <video id="v" playsinline muted autoplay></video>
 <div class="frame"><i class="c1"></i><i class="c2"></i><i class="c3"></i><i class="c4"></i><b class="cross"></b><div class="line"></div></div>
 <button id="close" type="button">✕ 取消</button>
-<div id="hint">將 QR Code 對準方框，十字對準中央<br>辨識到內容會自動完成</div>
-<div id="result"><h3>QR Code 內容</h3><textarea id="rt" readonly></textarea><br><button id="copy" type="button">📋 複製</button></div>
+<div id="hint">把十字對準要讀的條碼／QR Code<br>（一維條碼請橫放）辨識到會自動完成</div>
+<div id="result"><h3>掃描內容</h3><textarea id="rt" readonly></textarea><br><button id="copy" type="button">📋 複製</button></div>
 <script>
 (function () {
   var v = document.getElementById('v'), hint = document.getElementById('hint'), stream = null, timer = null, busy = false, done = false;
@@ -63,16 +63,33 @@
       document.getElementById('copy').onclick = function () { navigator.clipboard && navigator.clipboard.writeText(text); };
     }
   }
-  function loadJsQR() {
+  // 要辨識的格式：QR Code ＋ 常見一維條碼（商品 EAN/UPC、Code 128/39/93、ITF、Codabar）＋ Data Matrix／PDF417
+  var WANT = ['qr_code', 'code_128', 'code_39', 'code_93', 'ean_13', 'ean_8', 'upc_a', 'upc_e', 'itf', 'codabar', 'data_matrix', 'pdf417'];
+  function loadZXing() {
     return new Promise(function (res, rej) {
-      if (window.jsQR) return res(window.jsQR);
-      var s = document.createElement('script'); s.src = 'https://cdn.jsdelivr.net/npm/jsqr@1.4.0/dist/jsQR.js';
-      s.onload = function () { window.jsQR ? res(window.jsQR) : rej(); }; s.onerror = rej; document.head.appendChild(s);
+      if (window.ZXing) return res(window.ZXing);
+      var s = document.createElement('script'); s.src = 'https://cdn.jsdelivr.net/npm/@zxing/library@0.21.3/umd/index.min.js';
+      s.onload = function () { window.ZXing ? res(window.ZXing) : rej(); }; s.onerror = rej; document.head.appendChild(s);
     });
+  }
+  function zxReader(Z, formats) {
+    var hints = new Map();
+    hints.set(Z.DecodeHintType.POSSIBLE_FORMATS, formats);
+    hints.set(Z.DecodeHintType.TRY_HARDER, true);
+    var r = new Z.MultiFormatReader(); r.setHints(hints); return r;
+  }
+  function grayOf(ctx, w, h) {
+    var d = ctx.getImageData(0, 0, w, h).data, g = new Uint8ClampedArray(w * h);
+    for (var i = 0, j = 0; i < d.length; i += 4, j++) g[j] = (d[i] * 299 + d[i + 1] * 587 + d[i + 2] * 114) / 1000;
+    return g;
+  }
+  function zxTry(Z, reader, g, w, h) {
+    try { var r = reader.decode(new Z.BinaryBitmap(new Z.HybridBinarizer(new Z.RGBLuminanceSource(g, w, h)))); return r && r.getText(); }
+    catch (e) { return ''; }   // NotFoundException：沒有條碼
   }
   async function start() {
     try {
-      stream = await navigator.mediaDevices.getUserMedia({ video: { facingMode: { ideal: 'environment' }, width: { ideal: 1280 }, height: { ideal: 720 } }, audio: false });
+      stream = await navigator.mediaDevices.getUserMedia({ video: { facingMode: { ideal: 'environment' }, width: { ideal: 1920 }, height: { ideal: 1080 } }, audio: false });
     } catch (e) {
       hint.innerHTML = '無法開啟相機，請允許瀏覽器使用相機後重新整理此頁<br>（' + (e && e.name || '') + '）';
       return;
@@ -80,23 +97,53 @@
     v.srcObject = stream;
     try { await v.play(); } catch (e) {}
     var det = null;
-    if ('BarcodeDetector' in window) { try { det = new BarcodeDetector({ formats: ['qr_code'] }); } catch (e) {} }
-    var jsQR = null;
-    if (!det) { try { jsQR = await loadJsQR(); } catch (e) { hint.textContent = '無法載入 QR 辨識元件，請確認網路'; return; } }
+    if ('BarcodeDetector' in window) {
+      try {
+        var sup = await BarcodeDetector.getSupportedFormats();
+        var fm = WANT.filter(function (f) { return sup.indexOf(f) >= 0; });
+        if (fm.length && fm.indexOf('qr_code') >= 0 && fm.indexOf('code_128') >= 0) det = new BarcodeDetector({ formats: fm });
+      } catch (e) {}
+    }
+    var Z = null, r1d = null, r2d = null;
+    if (!det) {
+      try {
+        Z = await loadZXing();
+        var F = Z.BarcodeFormat;
+        r1d = zxReader(Z, [F.CODE_128, F.CODE_39, F.CODE_93, F.EAN_13, F.EAN_8, F.UPC_A, F.UPC_E, F.ITF, F.CODABAR]);
+        r2d = zxReader(Z, [F.QR_CODE, F.DATA_MATRIX, F.PDF_417]);
+      } catch (e) { hint.textContent = '無法載入條碼辨識元件，請確認網路'; return; }
+    }
     var c = document.createElement('canvas'), ctx = c.getContext('2d', { willReadFrequently: true });
     timer = setInterval(async function () {
       if (busy || done || v.readyState < 2) return;
       busy = true;
       try {
+        var vw = v.videoWidth, vh = v.videoHeight, cx = vw / 2, cy = vh / 2;   // 影像中心＝畫面十字（object-fit: cover 置中裁切）
         if (det) {
-          var r = await det.detect(v);
-          if (r && r.length && r[0].rawValue) finish(r[0].rawValue);
+          // 只取「外框包含十字」的條碼；多個靠很近時取中心最接近十字者
+          var list = await det.detect(v), best = null, bd = Infinity, tol = Math.min(vw, vh) * 0.03;
+          (list || []).forEach(function (b) {
+            var bb = b.boundingBox; if (!b.rawValue || !bb) return;
+            if (cx < bb.x - tol || cx > bb.x + bb.width + tol || cy < bb.y - tol || cy > bb.y + bb.height + tol) return;
+            var dx = bb.x + bb.width / 2 - cx, dy = bb.y + bb.height / 2 - cy, dist = dx * dx + dy * dy;
+            if (dist < bd) { bd = dist; best = b; }
+          });
+          if (best) finish(best.rawValue);
         } else {
-          var vw = v.videoWidth, vh = v.videoHeight, s = Math.min(vw, vh) * 0.8, out = Math.min(640, Math.round(s));
-          c.width = out; c.height = out;
-          ctx.drawImage(v, (vw - s) / 2, (vh - s) / 2, s, s, 0, 0, out, out);
-          var code = jsQR(ctx.getImageData(0, 0, out, out).data, out, out, { inversionAttempts: 'dontInvert' });
-          if (code && code.data) finish(code.data);
+          var s = Math.min(vw, vh) * 0.8;
+          // ① 一維條碼：只看「穿過十字的細長橫帶」，旁邊靠很近的其他條碼不會被讀到
+          var bw = Math.min(1000, Math.round(s)), bh = Math.max(24, Math.round(bw * 0.08)), sh = s * 0.08;
+          c.width = bw; c.height = bh;
+          ctx.drawImage(v, cx - s / 2, cy - sh / 2, s, sh, 0, 0, bw, bh);
+          var t = zxTry(Z, r1d, grayOf(ctx, bw, bh), bw, bh);
+          if (!t) {
+            // ② QR Code／二維條碼：看取景框內的正方形
+            var out = Math.min(800, Math.round(s));
+            c.width = out; c.height = out;
+            ctx.drawImage(v, cx - s / 2, cy - s / 2, s, s, 0, 0, out, out);
+            t = zxTry(Z, r2d, grayOf(ctx, out, out), out, out);
+          }
+          if (t) finish(t);
         }
       } catch (e) {} finally { busy = false; }
     }, 150);
