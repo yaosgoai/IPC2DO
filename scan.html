@@ -63,6 +63,7 @@
   };
   /* ---- 防呆：格式／檢查碼驗證＋連續多張一致才採用＋凍結畫面二次確認 ---- */
   var lastVal = null, sameN = 0, pending = null;
+  var CONFIRM = new URLSearchParams(location.search).get('confirm') !== '0';   // 系統設定：掃描後是否顯示確認畫面
   var ONE_D = ['code_128', 'code_39', 'code_93', 'codabar', 'ean_13', 'ean_8', 'itf', 'upc_a', 'upc_e'];
   var NAMES = { qr_code: 'QR Code', data_matrix: 'Data Matrix', pdf417: 'PDF417', ean_13: 'EAN-13', ean_8: 'EAN-8', upc_a: 'UPC-A', upc_e: 'UPC-E',
     code_128: 'Code 128', code_39: 'Code 39', code_93: 'Code 93', itf: 'ITF', codabar: 'Codabar' };
@@ -88,12 +89,18 @@
     if (done) return;
     if (!valid(fmt, text)) { lastVal = null; sameN = 0; return; }
     if (text === lastVal) sameN++; else { lastVal = text; sameN = 1; }
-    if (sameN >= needReads(fmt)) showConfirm(fmt, text);
+    if (sameN >= needReads(fmt)) {
+      if (CONFIRM) showConfirm(fmt, text);
+      else { beep(); finish(text); }   // 不需確認：直接帶入
+    }
+  }
+  function beep() {
+    try { navigator.vibrate && navigator.vibrate(80); } catch (e) {}
+    try { var a = new (window.AudioContext || window.webkitAudioContext)(), o = a.createOscillator(); o.frequency.value = 1800; o.connect(a.destination); o.start(); o.stop(a.currentTime + 0.12); } catch (e) {}
   }
   function showConfirm(fmt, text) {
     done = true; pending = text;
-    try { navigator.vibrate && navigator.vibrate(80); } catch (e) {}
-    try { var a = new (window.AudioContext || window.webkitAudioContext)(), o = a.createOscillator(); o.frequency.value = 1800; o.connect(a.destination); o.start(); o.stop(a.currentTime + 0.12); } catch (e) {}
+    beep();
     var sh = document.getElementById('shot'), vw = v.videoWidth, vh = v.videoHeight, s = Math.min(vw, vh) * 0.8;
     sh.width = Math.round(s); sh.height = Math.round(s);
     try { sh.getContext('2d').drawImage(v, (vw - s) / 2, (vh - s) / 2, s, s, 0, 0, sh.width, sh.height); } catch (e) {}
