@@ -36,10 +36,27 @@
   });
 
   // 「記住我」：系統把登入狀態存到這個入口頁（第一方儲存，不受第三方 Cookie 封鎖影響）
-  // 只接受 Google Apps Script 沙盒（*.googleusercontent.com）傳來的訊息
+  // 資安（S-H2）：只接受「本頁 iframe 裡的系統畫面」傳來的訊息。
+  //   任何人自建的 Apps Script 網頁也在 *.googleusercontent.com，只檢查網域會讓別人的網頁以 window.open 開啟本頁並取走登入；
+  //   因此另外確認訊息來源視窗是本頁 iframe（或其內層框架），別的視窗（opener、其他分頁、其他網站）一律忽略。
   var K_SID = 'ipc2do_sid', K_EXP = 'ipc2do_sid_exp', K_MAIL = 'ipc2do_email';
+  var appFrame = document.getElementById('app');
   function st(fn) { try { return fn(); } catch (e) { return null; } }
-  function fromApp(e) { return /^https:\/\/[\w-]+(-\d+)?-script\.googleusercontent\.com$/.test(e.origin) || /\.googleusercontent\.com$/.test(e.origin); }
+  function inAppFrame(src) {
+    var app = appFrame && appFrame.contentWindow;
+    if (!app || !src) return false;
+    for (var w = src, i = 0; w && i < 10; i++) {   // 系統畫面在 Google 的多層 iframe 內：沿 parent 往上找本頁 iframe
+      if (w === app) return true;
+      var p = null;
+      try { p = w.parent; } catch (x) { return false; }
+      if (!p || p === w) return false;
+      w = p;
+    }
+    return false;
+  }
+  function fromApp(e) {
+    return /^https:\/\/[\w-]+\.googleusercontent\.com$/.test(e.origin) && inAppFrame(e.source);
+  }
   window.addEventListener('message', function (e) {
     var d = e.data;
     if (!d || typeof d !== 'object' || !fromApp(e)) return;
