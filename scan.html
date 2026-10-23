@@ -25,6 +25,15 @@
     border-radius: 20px; padding: 10px 16px; font: inherit; font-size: 16px; }
   #hint { position: fixed; left: 0; right: 0; bottom: calc(80px + env(safe-area-inset-bottom)); text-align: center; color: #fff; font-size: 16px;
     text-shadow: 0 0 4px #000; padding: 0 20px; line-height: 1.6; }
+  #confirm { display: none; position: fixed; inset: 0; z-index: 5; background: rgba(0,0,0,.94); color: #fff; flex-direction: column;
+    padding: calc(20px + env(safe-area-inset-top)) 16px calc(20px + env(safe-area-inset-bottom)); box-sizing: border-box; text-align: center; }
+  #confirm .ct { font-size: 18px; }
+  #shot { flex: 1; min-height: 0; width: 100%; object-fit: contain; margin: 12px 0; }
+  #cfmt { color: #9ca3af; font-size: 14px; }
+  #ctext { font-size: 22px; margin: 6px 0 16px; word-break: break-all; user-select: text; }
+  .cbtns { display: flex; gap: 12px; }
+  .cbtns button { flex: 1; height: 54px; font-size: 17px; border-radius: 12px; border: 0; }
+  #use { background: #1a73e8; color: #fff; }
   #result { display: none; position: fixed; inset: 0; background: #fff; padding: 24px; box-sizing: border-box; overflow: auto; }
   #result textarea { width: 100%; height: 50vh; font-size: 16px; box-sizing: border-box; }
   #result button { margin-top: 12px; font-size: 16px; padding: 10px 18px; }
@@ -38,7 +47,10 @@
 <video id="v" playsinline muted autoplay></video>
 <div class="frame"><i class="c1"></i><i class="c2"></i><i class="c3"></i><i class="c4"></i><b class="cross"></b><div class="line"></div></div>
 <button id="close" type="button">✕ 取消</button>
-<div id="hint">把十字對準要讀的條碼／QR Code<br>（一維條碼請橫放）辨識到會自動完成</div>
+<div id="hint">把十字對準要讀的條碼，條碼盡量填滿方框寬度<br>（一維條碼請橫放）辨識到會自動完成</div>
+<div id="confirm"><div class="ct">請對照畫面確認內容是否正確</div><canvas id="shot"></canvas>
+  <div id="cfmt"></div><div id="ctext"></div>
+  <div class="cbtns"><button id="again" type="button">↻ 重新掃描</button><button id="use" type="button">✔ 正確，使用</button></div></div>
 <div id="result"><h3>掃描內容</h3><textarea id="rt" readonly></textarea><br><button id="copy" type="button">📋 複製</button></div>
 <script>
 (function () {
@@ -49,10 +61,53 @@
     try { if (window.opener) window.opener.postMessage({ t: 'ipc2do-qr', text: '' }, '*'); } catch (e) {}
     closeMe();
   };
-  function finish(text) {
-    if (done) return; done = true;
+  /* ---- 防呆：格式／檢查碼驗證＋連續多張一致才採用＋凍結畫面二次確認 ---- */
+  var lastVal = null, sameN = 0, pending = null;
+  var ONE_D = ['code_128', 'code_39', 'code_93', 'codabar', 'ean_13', 'ean_8', 'itf', 'upc_a', 'upc_e'];
+  var NAMES = { qr_code: 'QR Code', data_matrix: 'Data Matrix', pdf417: 'PDF417', ean_13: 'EAN-13', ean_8: 'EAN-8', upc_a: 'UPC-A', upc_e: 'UPC-E',
+    code_128: 'Code 128', code_39: 'Code 39', code_93: 'Code 93', itf: 'ITF', codabar: 'Codabar' };
+  function needReads(f) { return ['code_39', 'code_93', 'itf', 'codabar'].indexOf(f) >= 0 ? 4 : ONE_D.indexOf(f) >= 0 ? 3 : 2; }
+  function eanOk(d) { var s = 0, n = d.length; for (var i = 0; i < n - 1; i++) { var x = +d.charAt(n - 2 - i); s += i % 2 === 0 ? x * 3 : x; } return (10 - s % 10) % 10 === +d.charAt(n - 1); }
+  function valid(f, v) {
+    if (!v || !String(v).trim() || /[\uFFFD]/.test(v) || /[\x00-\x08\x0B\x0C\x0E-\x1C\x1E\x1F]/.test(v)) return false;   // 亂碼／控制字元
+    switch (f) {
+      case 'ean_13': return /^\d{13}$/.test(v) && eanOk(v);
+      case 'ean_8': return /^\d{8}$/.test(v) && eanOk(v);
+      case 'upc_a': return /^\d{12}$/.test(v) && eanOk(v);
+      case 'upc_e': return /^\d{6,8}$/.test(v);
+      case 'itf': return /^\d{6,}$/.test(v) && v.length % 2 === 0 && (v.length !== 14 || eanOk(v));
+      case 'codabar': return v.replace(/[ABCD]/gi, '').length >= 4;
+      case 'code_39': return v.length >= 3 && /^[0-9A-Z \-.$\/+%*]+$/.test(v);
+      case 'code_93': return v.length >= 3;
+      case 'code_128': return v.length >= 2;
+      default: return true;
+    }
+  }
+  // 每張畫面讀到的候選：通過驗證且「連續 N 張一致」才進入確認畫面
+  function candidate(fmt, text) {
+    if (done) return;
+    if (!valid(fmt, text)) { lastVal = null; sameN = 0; return; }
+    if (text === lastVal) sameN++; else { lastVal = text; sameN = 1; }
+    if (sameN >= needReads(fmt)) showConfirm(fmt, text);
+  }
+  function showConfirm(fmt, text) {
+    done = true; pending = text;
     try { navigator.vibrate && navigator.vibrate(80); } catch (e) {}
     try { var a = new (window.AudioContext || window.webkitAudioContext)(), o = a.createOscillator(); o.frequency.value = 1800; o.connect(a.destination); o.start(); o.stop(a.currentTime + 0.12); } catch (e) {}
+    var sh = document.getElementById('shot'), vw = v.videoWidth, vh = v.videoHeight, s = Math.min(vw, vh) * 0.8;
+    sh.width = Math.round(s); sh.height = Math.round(s);
+    try { sh.getContext('2d').drawImage(v, (vw - s) / 2, (vh - s) / 2, s, s, 0, 0, sh.width, sh.height); } catch (e) {}
+    document.getElementById('cfmt').textContent = (NAMES[fmt] || '條碼') + '（已連續比對 ' + needReads(fmt) + ' 次一致）';
+    document.getElementById('ctext').textContent = text;
+    document.getElementById('confirm').style.display = 'flex';
+  }
+  document.getElementById('again').onclick = function () {
+    document.getElementById('confirm').style.display = 'none';
+    lastVal = null; sameN = 0; pending = null; done = false;
+  };
+  document.getElementById('use').onclick = function () { if (pending != null) { done = false; finish(pending); } };
+  function finish(text) {
+    if (done) return; done = true;
     stop();
     if (window.opener) {
       try { window.opener.postMessage({ t: 'ipc2do-qr', text: text }, '*'); } catch (e) {}
@@ -84,8 +139,12 @@
     return g;
   }
   function zxTry(Z, reader, g, w, h) {
-    try { var r = reader.decode(new Z.BinaryBitmap(new Z.HybridBinarizer(new Z.RGBLuminanceSource(g, w, h)))); return r && r.getText(); }
-    catch (e) { return ''; }   // NotFoundException：沒有條碼
+    try {
+      var r = reader.decode(new Z.BinaryBitmap(new Z.HybridBinarizer(new Z.RGBLuminanceSource(g, w, h))));
+      if (!r || !r.getText()) return null;
+      var name = String(Z.BarcodeFormat[r.getBarcodeFormat()] || '').toLowerCase().replace('pdf_417', 'pdf417');
+      return { fmt: name, text: r.getText() };
+    } catch (e) { return null; }   // NotFoundException：沒有條碼
   }
   async function start() {
     try {
@@ -128,14 +187,20 @@
             var dx = bb.x + bb.width / 2 - cx, dy = bb.y + bb.height / 2 - cy, dist = dx * dx + dy * dy;
             if (dist < bd) { bd = dist; best = b; }
           });
-          if (best) finish(best.rawValue);
+          if (best) candidate(best.format, best.rawValue); else { lastVal = null; sameN = 0; }
         } else {
           var s = Math.min(vw, vh) * 0.8;
-          // ① 一維條碼：只看「穿過十字的細長橫帶」，旁邊靠很近的其他條碼不會被讀到
-          var bw = Math.min(1000, Math.round(s)), bh = Math.max(24, Math.round(bw * 0.08)), sh = s * 0.08;
-          c.width = bw; c.height = bh;
-          ctx.drawImage(v, cx - s / 2, cy - sh / 2, s, sh, 0, 0, bw, bh);
-          var t = zxTry(Z, r1d, grayOf(ctx, bw, bh), bw, bh);
+          // ① 一維條碼：看「穿過十字的橫帶」。條碼旁常緊貼文字（例如載具「檢核碼(15位)」），會破壞條碼前後的空白區，
+          //    所以由寬到窄試 4 種寬度；並把橫帶放大到約 1400px 寬（線條太細時較好辨識）
+          var t = null, sh = Math.min(vw, vh) * 0.12, fr = [0.92, 0.78, 0.64, 0.5];
+          for (var k = 0; k < fr.length && !t; k++) {
+            var sw = vw * fr[k], sc = Math.min(2, Math.max(1, 1400 / sw));
+            var bw = Math.round(sw * sc), bh = Math.max(40, Math.round(sh * sc));
+            c.width = bw; c.height = bh;
+            ctx.imageSmoothingEnabled = true; ctx.imageSmoothingQuality = 'high';
+            ctx.drawImage(v, (vw - sw) / 2, cy - sh / 2, sw, sh, 0, 0, bw, bh);
+            t = zxTry(Z, r1d, grayOf(ctx, bw, bh), bw, bh);
+          }
           if (!t) {
             // ② QR Code／二維條碼：看取景框內的正方形
             var out = Math.min(800, Math.round(s));
@@ -143,7 +208,7 @@
             ctx.drawImage(v, cx - s / 2, cy - s / 2, s, s, 0, 0, out, out);
             t = zxTry(Z, r2d, grayOf(ctx, out, out), out, out);
           }
-          if (t) finish(t);
+          if (t) candidate(t.fmt, t.text); else { lastVal = null; sameN = 0; }
         }
       } catch (e) {} finally { busy = false; }
     }, 150);
